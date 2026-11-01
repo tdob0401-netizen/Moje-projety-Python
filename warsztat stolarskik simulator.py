@@ -1,18 +1,76 @@
 import random
+import sqlite3
+
+# --- KONFIGURACJA BAZY DANYCH SQL ---
+conn = sqlite3.connect("warsztat.db")
+cursor = conn.cursor()
+
+# Tworzymy tabele w bazie, jeśli jeszcze nie istnieją
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS stan_gry (
+        id INTEGER PRIMARY KEY,
+        gotowka REAL,
+        dzien INTEGER,
+        reputacja INTEGER
+    )
+""")
+
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS magazyn (
+        material TEXT PRIMARY KEY,
+        ilosc INTEGER
+    )
+""")
+
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS zamowienia (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nazwa TEXT,
+        cena REAL,
+        koszt REAL
+    )
+""")
+conn.commit()
+
+# Jeśli baza jest pusta, wrzucamy stan początkowy
+cursor.execute("SELECT COUNT(*) FROM stan_gry")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO stan_gry (id, gotowka, dzien, reputacja) VALUES (1, 2000.0, 1, 0)")
+    
+    poczatkowy_magazyn = [("sosna", 10), ("dab", 3), ("sklejka", 5)]
+    cursor.executemany("INSERT OR IGNORE INTO magazyn (material, ilosc) VALUES (?, ?)", poczatkowy_magazyn)
+    conn.commit()
+
+
+# --- FUNKCJE POMOCNICZE DO BAZY SQL ---
+
+def pobierz_dane_gry():
+    cursor.execute("SELECT gotowka, dzien, reputacja FROM stan_gry WHERE id = 1")
+    return cursor.fetchone()
+
+def zaktualizuj_dane_gry(gotowka, dzien, reputacja):
+    cursor.execute("UPDATE stan_gry SET gotowka = ?, dzien = ?, reputacja = ? WHERE id = 1", (gotowka, dzien, reputacja))
+    conn.commit()
+
+def pobierz_magazyn():
+    cursor.execute("SELECT material, ilosc FROM magazyn")
+    return dict(cursor.fetchall())
+
+def zaktualizuj_magazyn(material, ilosc):
+    cursor.execute("UPDATE magazyn SET ilosc = ? WHERE material = ?", (ilosc, material))
+    conn.commit()
+
+def pobierz_zamowienia():
+    cursor.execute("SELECT id, nazwa, cena, koszt FROM zamowienia")
+    rows = cursor.fetchall()
+    return [{"id": r[0], "nazwa": r[1], "cena": r[2], "koszt": r[3]} for r in rows]
+
+
+# --- ORYGINALNA LOGIKA GRY (ZMODYFIKOWANA POD SQL) ---
 
 print("===================================")
-print("       SYMULATOR STOLARZA")
+print("        SYMULATOR STOLARZA (SQL)")
 print("===================================")
-
-gotowka = 2000.0
-dzien = 1
-reputacja = 0
-
-magazyn = {
-    "sosna": 10,
-    "dab": 3,
-    "sklejka": 5
-}
 
 ceny = {
     "sosna": 20,
@@ -51,11 +109,12 @@ meble = {
     }
 }
 
-zamowienia = []
-
 
 def pokaz_stan():
-    print("\n--- STAN WARSZTATU ---")
+    gotowka, dzien, reputacja = pobierz_dane_gry()
+    magazyn = pobierz_magazyn()
+    
+    print("\n--- STAN WARSZTATU (ZAPISANY W SQL) ---")
     print("Dzień:", dzien)
     print("Gotówka:", round(gotowka, 2), "zł")
     print("Reputacja:", reputacja)
@@ -66,10 +125,10 @@ def pokaz_stan():
 
 
 def kup_drewno():
-    global gotowka
+    gotowka, dzien, reputacja = pobierz_dane_gry()
+    magazyn = pobierz_magazyn()
 
     print("\n--- SKŁAD DREWNA ---")
-
     for material, cena in ceny.items():
         print(material, "-", cena, "zł za sztukę")
 
@@ -98,12 +157,15 @@ def kup_drewno():
     gotowka -= koszt
     magazyn[material] += ilosc
 
+    # Zapis zmian w bazie SQL
+    zaktualizuj_dane_gry(gotowka, dzien, reputacja)
+    zaktualizuj_magazyn(material, magazyn[material])
+
     print("Zakup udany! Koszt:", koszt, "zł")
 
 
 def pokaz_meble():
     print("\n--- KATALOG MEBLI ---")
-
     for kod, mebel in meble.items():
         print(
             kod, "-", mebel["nazwa"],
@@ -114,7 +176,8 @@ def pokaz_meble():
 
 
 def wykonaj_mebel():
-    global gotowka, reputacja
+    gotowka, dzien, reputacja = pobierz_dane_gry()
+    magazyn = pobierz_magazyn()
 
     pokaz_meble()
     kod = input("\nCo produkujesz? ").lower()
@@ -139,26 +202,28 @@ def wykonaj_mebel():
     gotowka -= koszt_pracy
     reputacja += 1
 
-    zamowienia.append({
-        "nazwa": mebel["nazwa"],
-        "cena": cena,
-        "koszt": koszt_pracy
-    })
+    # Zapis w bazie SQL
+    zaktualizuj_dane_gry(gotowka, dzien, reputacja)
+    zaktualizuj_magazyn(material, magazyn[material])
+
+    cursor.execute("INSERT INTO zamowienia (nazwa, cena, koszt) VALUES (?, ?, ?)", 
+                   (mebel["nazwa"], cena, koszt_pracy))
+    conn.commit()
 
     print("\nUdało się wykonać:", mebel["nazwa"])
     print("Koszt pracy:", koszt_pracy, "zł")
-    print("Mebel czeka na sprzedaż.")
+    print("Mebel czeka na sprzedaż (zapisano w bazie SQL).")
 
 
 def sprzedaj_mebel():
-    global gotowka, reputacja
+    gotowka, dzien, reputacja = pobierz_dane_gry()
+    zamowienia = pobierz_zamowienia()
 
     if not zamowienia:
         print("Nie masz gotowych mebli na sprzedaż.")
         return
 
     print("\n--- GOTOWE MEBLE ---")
-
     for i, mebel in enumerate(zamowienia, start=1):
         print(i, "-", mebel["nazwa"], "-", mebel["cena"], "zł")
 
@@ -172,26 +237,30 @@ def sprzedaj_mebel():
         print("Nie ma takiego numeru.")
         return
 
-    mebel = zamowienia.pop(numer - 1)
-    gotowka += mebel["cena"]
+    wybrany = zamowienia[numer - 1]
+    
+    # Usuwamy z bazy zamówień
+    cursor.execute("DELETE FROM zamowienia WHERE id = ?", (wybrany["id"],))
+    conn.commit()
+
+    gotowka += wybrany["cena"]
     reputacja += 2
 
-    print("Sprzedano:", mebel["nazwa"])
-    print("Otrzymujesz:", mebel["cena"], "zł")
+    zaktualizuj_dane_gry(gotowka, dzien, reputacja)
+
+    print("Sprzedano:", wybrany["nazwa"])
+    print("Otrzymujesz:", wybrany["cena"], "zł")
 
 
 def przyjmij_zlecenie():
     print("\n--- ZLECENIE OD KLIENTA ---")
-
     klienci = [
         ("Sąsiad", "Półka", 180),
         ("Kawiarnia", "3 krzesła", 900),
         ("Rodzina", "Stół dębowy", 850),
         ("Biuro", "Szafka", 500)
     ]
-
     klient = random.choice(klienci)
-
     print("Klient:", klient[0])
     print("Potrzebuje:", klient[1])
     print("Proponowana zapłata:", klient[2], "zł")
@@ -199,11 +268,12 @@ def przyjmij_zlecenie():
 
 
 def zakoncz_dzien():
-    global dzien, gotowka
-
+    gotowka, dzien, reputacja = pobierz_dane_gry()
     koszt_staly = 50
     gotowka -= koszt_staly
     dzien += 1
+
+    zaktualizuj_dane_gry(gotowka, dzien, reputacja)
 
     print("\nDzień zakończony.")
     print("Koszty utrzymania warsztatu:", koszt_staly, "zł")
@@ -239,6 +309,7 @@ while True:
         zakoncz_dzien()
     elif wybor == "0":
         print("Dziękujemy za grę w Symulator Stolarza!")
+        conn.close()
         break
     else:
         print("Nieprawidłowa opcja.")
